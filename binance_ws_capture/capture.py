@@ -1,47 +1,43 @@
-import websocket
-import json
-import gzip
-import time
-import datetime as dt
+import websocket, json, gzip, time, datetime as dt
 from pathlib import Path
+from orderbook import OrderBook
 
-Path("data").mkdir(parents=True, exist_ok=True)
+Path("data").mkdir(exist_ok=True)
 filename = f"data/btcusdt_{dt.datetime.utcnow().isoformat()}.jsonl.gz"
 
-def on_message(ws, message):
-    with gzip.open(filename, 'at') as f:
-        payload = {
-            "ts": time.time_ns(),
-            "data": json.loads(message)
-        }
+book = OrderBook()                   # integrity check in parallel
+
+def on_message(_, raw):
+    payload = {"ts": time.time_ns(), "data": json.loads(raw)}
+    # ---- live integrity check (doesn't affect file write) ----
+    book.apply_delta(payload["data"])
+
+    # ---- persist raw message ----
+    with gzip.open(filename, "at") as f:
         f.write(json.dumps(payload) + "\n")
 
-def on_error(ws, error):
-    print(f"[ERROR] {error}")
+def on_error(_, err):   print("[ERROR]", err)
+def on_close(_, c, m):  print("[CLOSE]", c, m)
 
-def on_close(ws, close_status_code, close_msg):
-    print(f"[CLOSED] code={close_status_code}, msg={close_msg}")
-
-
+# use generic endpoint → need explicit SUBSCRIBE to depth + trades
+url = "wss://stream.binance.us:9443/ws"
 def on_open(ws):
-    print("[OPEN] WebSocket connection opened")
-    subscribe_message = {
+    sub = {
         "method": "SUBSCRIBE",
         "params": [
-            "btcusdt@depth@100ms",
-            "btcusdt@aggTrade"
+            "btcusdt@depth@100ms",        # depth deltas
+            "btcusdt@aggTrade"            # trades
         ],
         "id": 1
     }
-    print("[SEND] Subscribing to streams")
-    ws.send(json.dumps(subscribe_message))
+    ws.send(json.dumps(sub))
+    print("[OPEN] subscribed")
 
 ws = websocket.WebSocketApp(
-    "wss://stream.binance.us:9443/ws/btcusdt@depth10@100ms",
+    url,
+    on_open=on_open,
     on_message=on_message,
     on_error=on_error,
     on_close=on_close,
-    on_open=on_open
 )
-
 ws.run_forever()
